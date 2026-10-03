@@ -1,0 +1,24 @@
+{
+  "AWS_PROFILE": "selleros",
+  "AWS_REGION": "us-east-1",
+  "SSM_TARGET_INSTANCE_ID": "i-xxxxxxxxxxxxxxxxx",
+  "AUTO_START_TUNNEL": true,
+  "DB_RDS_HOST": "your-rds-endpoint.rds.amazonaws.com",
+  "DB_LOCAL_HOST": "127.0.0.1",
+  "DB_LOCAL_PORT": 55434,
+  "DB_RDS_PORT": 5432,
+  "DB_NAME": "warehouse",
+  "DB_USER": "swdw",
+  "DB_PASSWORD": "",
+  "RDS_CA_BUNDLE": null,
+  "ALLOWED_SCHEMAS": [
+    "dw",
+    "ops",
+    "apify"
+  ],
+  "MAX_ROWS": 1000,
+  "STATEMENT_TIMEOUT_MS": 30000,
+  "APIFY_TOKEN": "",
+  "APIFY_DEFAULT_PARTNER": "selleros",
+  "ANTHROPIC_API_KEY": ""
+}

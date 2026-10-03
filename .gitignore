@@ -1,16 +1,44 @@
-# Byte-compiled / optimized / DLL files
+# ==========================================
+# SellerOS Warehouse MCP - .gitignore
+# ==========================================
+
+# --- Local Secrets, Credentials & Configs ---
+# Prevent accidental leaks of AWS credentials, RDS passwords, and Apify tokens
+config.json
+config.local.json
+*.local.json
+!config.example.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+
+# --- Python & Bytecode ---
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
 
-# Distribution / packaging
-.Python
+# --- Virtual Environments ---
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# --- PyInstaller & Distribution / Packaging ---
 build/
-develop-eggs/
 dist/
+*.spec
+*.manifest
+.Python
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -26,48 +54,57 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
+# --- Testing, Coverage & Quality Tools ---
+.pytest_cache/
+.coverage
+.coverage.*
 htmlcov/
 .tox/
 .nox/
-.coverage
-.coverage.*
+.hypothesis/
 .cache
+.mypy_cache/
+.ruff_cache/
 nosetests.xml
 coverage.xml
 *.cover
 *.py.cache
-.hypothesis/
-.pytest_cache/
-cover/
 
-# Environments
-.venv/
-venv/
-ENV/
-env/
-env.bak/
-venv.bak/
-
-# IDEs and Editors
+# --- IDEs & Editors ---
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
+*.sublime-project
+*.sublime-workspace
 
-# Operating System Files
-.DS_Store
-Thumbs.db
-
-# Environment variables & local secrets
-.env
-.env.*
+# --- Logs & Temporary Files ---
 *.log
+logs/
+pip-log.txt
+pip-delete-this-directory.txt
+*.sqlite3
+*.db
+tmp/
+temp/
+
+# --- AI Agents & Workspace Tooling ---
+.gemini/
+.agents/
+.claude/
+
+# --- Operating System Files ---
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
