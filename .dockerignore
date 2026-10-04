@@ -1,0 +1,17 @@
+.git
+.github
+.pytest_cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+dist
+build
+*.spec
+config.json
+*.exe
+.system_generated
+installer.py
+build_exe.py

@@ -30,6 +30,8 @@ def build():
         "--hidden-import", "pydantic",
         "--hidden-import", "anyio",
         "--hidden-import", "starlette",
+        "--hidden-import", "tkinter",
+        "--hidden-import", "tkinter.ttk",
         str(server_script)
     ]
 

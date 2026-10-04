@@ -59,6 +59,23 @@ log = logging.getLogger(__name__)
 
 # Helper function to load configuration file
 def load_config() -> dict:
+    config: dict = {}
+
+    secret_id = os.environ.get("CONFIG_SECRET_ID")
+    if secret_id:
+        try:
+            import boto3
+            region = os.environ.get("AWS_REGION", "us-east-1")
+            session = boto3.Session(region_name=region)
+            client = session.client("secretsmanager")
+            res = client.get_secret_value(SecretId=secret_id)
+            if "SecretString" in res:
+                data = json.loads(res["SecretString"])
+                if isinstance(data, dict):
+                    config.update(data)
+        except Exception:
+            pass
+
     candidates = []
     if os.getenv("CONFIG_FILE"):
         candidates.append(Path(os.environ["CONFIG_FILE"]))
@@ -71,16 +88,27 @@ def load_config() -> dict:
         if p.exists() and p.is_file():
             try:
                 with open(p, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    file_data = json.load(f)
+                    for k, v in file_data.items():
+                        config.setdefault(k, v)
+                    return config
             except Exception:
                 pass
-    return {}
+    return config
 
 _cfg = load_config()
+
+# Normalize common key synonyms from Secrets Manager
+if "DB_HOST" in _cfg and "DB_RDS_HOST" not in _cfg:
+    _cfg["DB_RDS_HOST"] = _cfg["DB_HOST"]
+if "DB_PORT" in _cfg and "DB_RDS_PORT" not in _cfg:
+    _cfg["DB_RDS_PORT"] = _cfg["DB_PORT"]
 
 def get_setting(key: str, default: any = None) -> any:
     if key in os.environ and str(os.environ[key]).strip() != "":
         val = os.environ[key]
+        if isinstance(default, bool):
+            return val.lower() in ("true", "1", "yes")
         if isinstance(default, (int, float)):
             try:
                 return type(default)(val)
@@ -154,8 +182,13 @@ def get_db_pool():
         return None
     _POOL_INIT_ATTEMPTED = True
 
-    host = get_setting("DB_LOCAL_HOST", "127.0.0.1")
-    port = get_setting("DB_LOCAL_PORT", 55434)
+    if get_setting("DEPLOY_MODE") == "remote":
+        host = get_setting("DB_RDS_HOST", "selleros-warehouse.cvvtiac72c6q.us-east-1.rds.amazonaws.com")
+        port = int(get_setting("DB_RDS_PORT", 5432))
+    else:
+        host = get_setting("DB_LOCAL_HOST", "127.0.0.1")
+        port = int(get_setting("DB_LOCAL_PORT", 55434))
+
     db_url = get_setting("APIFY_DATABASE_URL")
     if not db_url:
         user = get_setting("DB_USER")
@@ -177,9 +210,10 @@ def get_db_pool():
         except Exception:
             pass
 
-    # Only attempt connection if host and port are actually listening
-    if not _is_port_open(target_host, target_port, timeout=0.3):
-        return None
+    # Only test local port if not in remote mode
+    if get_setting("DEPLOY_MODE") != "remote":
+        if not _is_port_open(target_host, target_port, timeout=0.3):
+            return None
 
     try:
         max_size = int(get_setting("APIFY_DB_POOL_MAX", 3))

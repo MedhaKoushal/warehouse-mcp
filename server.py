@@ -8,10 +8,12 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 import boto3
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -23,7 +25,25 @@ mcp = FastMCP("selleros-warehouse")
 
 # Helper function to load configuration file
 def load_config() -> dict:
-    """Loads configuration with search hierarchy for frozen .exe and dev mode."""
+    """Loads configuration with search hierarchy for AWS Secrets Manager, frozen .exe, and dev mode."""
+    config: dict = {}
+
+    # Check for AWS Secrets Manager first (when running on AWS ECS)
+    secret_id = os.environ.get("CONFIG_SECRET_ID")
+    if secret_id:
+        try:
+            region = os.environ.get("AWS_REGION", "us-east-1")
+            session = boto3.Session(region_name=region)
+            client = session.client("secretsmanager")
+            res = client.get_secret_value(SecretId=secret_id)
+            if "SecretString" in res:
+                data = json.loads(res["SecretString"])
+                if isinstance(data, dict):
+                    config.update(data)
+                    sys.stderr.write(f"[selleros-warehouse] Loaded configuration from AWS Secrets Manager: {secret_id}\n")
+        except Exception as e:
+            sys.stderr.write(f"[selleros-warehouse] Warning: Could not read Secrets Manager '{secret_id}': {e}\n")
+
     candidates = []
     if os.getenv("CONFIG_FILE"):
         candidates.append(Path(os.environ["CONFIG_FILE"]))
@@ -45,32 +65,57 @@ def load_config() -> dict:
         if p.exists() and p.is_file():
             try:
                 with open(p, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    file_data = json.load(f)
+                    for k, v in file_data.items():
+                        config.setdefault(k, v)
+                    return config
             except Exception as e:
                 sys.stderr.write(f"Warning: Failed to load config at {p}: {e}\n")
 
-    return {}
+    return config
 
 _cfg = load_config()
+
+# Normalize common key synonyms from Secrets Manager
+if "DB_HOST" in _cfg and "DB_RDS_HOST" not in _cfg:
+    _cfg["DB_RDS_HOST"] = _cfg["DB_HOST"]
+if "DB_PORT" in _cfg and "DB_RDS_PORT" not in _cfg:
+    _cfg["DB_RDS_PORT"] = _cfg["DB_PORT"]
 
 def get_setting(key: str, default: any = None) -> any:
     """Get setting from environment variable first, then config.json, then default."""
     if key in os.environ and os.environ[key].strip() != "":
         val = os.environ[key]
+        if isinstance(default, bool):
+            return val.lower() in ("true", "1", "yes")
         if isinstance(default, int):
             return int(val)
         if isinstance(default, list):
             return [s.strip() for s in val.split(",") if s.strip()]
-        if isinstance(default, bool):
-            return val.lower() in ("true", "1", "yes")
         return val
     return _cfg.get(key, default)
 
+def get_allowed_api_keys() -> list[str]:
+    """Retrieve list of valid team API keys from setting or environment."""
+    raw = get_setting("TEAM_API_KEYS", [])
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(k).strip() for k in parsed if str(k).strip()]
+        except Exception:
+            pass
+        return [k.strip() for k in raw.split(",") if k.strip()]
+    if isinstance(raw, list):
+        return [str(k).strip() for k in raw if str(k).strip()]
+    return []
+
 # Configuration settings
+DEPLOY_MODE       = get_setting("DEPLOY_MODE", "local")
 AWS_PROFILE       = get_setting("AWS_PROFILE", "selleros")
 REGION            = get_setting("AWS_REGION", "us-east-1")
 SSM_TARGET        = get_setting("SSM_TARGET_INSTANCE_ID", "i-03680992802022b55")
-AUTO_START_TUNNEL = get_setting("AUTO_START_TUNNEL", True)
+AUTO_START_TUNNEL = get_setting("AUTO_START_TUNNEL", False if DEPLOY_MODE == "remote" else True)
 LOCAL_HOST        = get_setting("DB_LOCAL_HOST", "127.0.0.1")
 LOCAL_PORT        = get_setting("DB_LOCAL_PORT", 55434)
 RDS_HOST          = get_setting("DB_RDS_HOST", "selleros-warehouse.cvvtiac72c6q.us-east-1.rds.amazonaws.com")
@@ -177,6 +222,9 @@ def _ensure_ssm_tunnel(max_attempts: int = 3, timeout_per_attempt: int = 25):
     """Checks if local SSM port is open; if not, automatically launches the AWS SSM tunnel with retry logic."""
     global _tunnel_process, _tunnel_log_file
 
+    if DEPLOY_MODE == "remote":
+        return  # In AWS ECS remote mode, connection is direct via VPC without SSM tunnel
+
     # Check if port is already listening
     if _is_port_open(LOCAL_HOST, LOCAL_PORT, timeout=0.5):
         return
@@ -277,35 +325,50 @@ def _ensure_ssm_tunnel(max_attempts: int = 3, timeout_per_attempt: int = 25):
     )
 
 def _connect() -> psycopg.Connection:
-    """Connects to PostgreSQL over SSM tunnel using DB_PASSWORD or fresh AWS IAM token."""
+    """Connects to PostgreSQL directly in remote mode, or over SSM tunnel in local mode."""
     if not RDS_HOST or not DB_NAME or not DB_USER:
         raise ValueError("Missing required database configuration (DB_RDS_HOST, DB_NAME, DB_USER) in config.json or environment variables.")
 
-    # Ensure background SSM tunnel is running
-    _ensure_ssm_tunnel()
+    if DEPLOY_MODE != "remote":
+        # Ensure background SSM tunnel is running in local mode
+        _ensure_ssm_tunnel()
 
     if DB_PASSWORD:
         token = DB_PASSWORD
     else:
         # Mint IAM auth token via boto3
-        session = boto3.Session(profile_name=AWS_PROFILE, region_name=REGION) if AWS_PROFILE else boto3.Session(region_name=REGION)
+        session = boto3.Session(profile_name=AWS_PROFILE, region_name=REGION) if (AWS_PROFILE and DEPLOY_MODE != "remote") else boto3.Session(region_name=REGION)
         rds_client = session.client("rds")
         token = rds_client.generate_db_auth_token(
-            DBHostname=RDS_HOST, Port=RDS_PORT, DBUsername=DB_USER, Region=REGION
+            DBHostname=RDS_HOST, Port=int(RDS_PORT), DBUsername=DB_USER, Region=REGION
         )
 
-    conn = psycopg.connect(
-        host=RDS_HOST,          # Checked against SSL cert
-        hostaddr=LOCAL_HOST,    # Actual network target (SSM Tunnel)
-        port=LOCAL_PORT,
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=token,
-        sslmode="verify-full" if CA_BUNDLE else "require",
-        sslrootcert=CA_BUNDLE,
-        row_factory=dict_row,
-        connect_timeout=15,
-    )
+    if DEPLOY_MODE == "remote":
+        # Direct VPC connection to RDS endpoint
+        conn = psycopg.connect(
+            host=RDS_HOST,
+            port=int(RDS_PORT),
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=token,
+            sslmode="require",
+            row_factory=dict_row,
+            connect_timeout=15,
+        )
+    else:
+        # Local connection routed through SSM tunnel localhost port
+        conn = psycopg.connect(
+            host=RDS_HOST,          # Checked against SSL cert
+            hostaddr=LOCAL_HOST,    # Actual network target (SSM Tunnel)
+            port=int(LOCAL_PORT),
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=token,
+            sslmode="verify-full" if CA_BUNDLE else "require",
+            sslrootcert=CA_BUNDLE,
+            row_factory=dict_row,
+            connect_timeout=15,
+        )
     with conn.cursor() as cur:
         cur.execute("SET default_transaction_read_only = on")
         cur.execute(f"SET statement_timeout = {STATEMENT_MS}")
@@ -385,6 +448,49 @@ def _close_shared_conn():
 
 atexit.register(_close_shared_conn)
 
+_remote_pool: ConnectionPool | None = None
+
+def _get_connection_pool() -> ConnectionPool:
+    """Returns a thread-safe connection pool for remote HTTP mode."""
+    global _remote_pool
+    if _remote_pool is None:
+        if DB_PASSWORD:
+            pwd = DB_PASSWORD
+        else:
+            session = boto3.Session(region_name=REGION)
+            rds_client = session.client("rds")
+            pwd = rds_client.generate_db_auth_token(
+                DBHostname=RDS_HOST, Port=int(RDS_PORT), DBUsername=DB_USER, Region=REGION
+            )
+        conninfo = (
+            f"host={RDS_HOST} port={RDS_PORT} dbname={DB_NAME} "
+            f"user={DB_USER} password={pwd} sslmode=require"
+        )
+        _remote_pool = ConnectionPool(
+            conninfo,
+            min_size=2,
+            max_size=10,
+            kwargs={"row_factory": dict_row, "connect_timeout": 15},
+            open=True,
+        )
+    return _remote_pool
+
+@contextmanager
+def db_cursor():
+    """Provides a safe database cursor. In remote mode, borrows from ConnectionPool; in local mode, uses single connection."""
+    if DEPLOY_MODE == "remote":
+        pool = _get_connection_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET default_transaction_read_only = on")
+                cur.execute(f"SET statement_timeout = {STATEMENT_MS}")
+                cur.execute("SET idle_in_transaction_session_timeout = 60000")
+                yield cur
+    else:
+        conn = _get_connection()
+        with conn.cursor() as cur:
+            yield cur
+
 _WRITE = re.compile(
     r"\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|"
     r"vacuum|analyze|call|do|merge|reindex|lock|comment|refresh|set|reset|"
@@ -412,8 +518,7 @@ def list_tables_and_schema(schema: str | None = None) -> dict:
     if any(s not in ALLOWED_SCHEMAS for s in targets):
         raise ValueError(f"Schema not allowed. Allowed: {list(ALLOWED_SCHEMAS)}")
 
-    conn = _get_connection()
-    with conn.cursor() as cur:
+    with db_cursor() as cur:
         cur.execute("""
             SELECT c.table_schema, c.table_name, c.column_name, c.data_type, c.is_nullable
             FROM information_schema.columns c
@@ -436,8 +541,7 @@ def run_metric_query(sql: str, max_rows: int = 200) -> dict:
     """Execute a single read-only analytical SQL query."""
     q = _guard(sql)
     limit = max(1, min(max_rows, MAX_ROWS))
-    conn = _get_connection()
-    with conn.cursor() as cur:
+    with db_cursor() as cur:
         cur.execute(q)
         rows = cur.fetchmany(limit)
         truncated = cur.fetchone() is not None
@@ -547,6 +651,13 @@ if __name__ == "__main__":
             print(f"[-] Connection test failed: {e}")
             sys.exit(1)
         sys.exit(0)
+    elif "--http" in sys.argv:
+        import uvicorn
+        from remote_app import app
+        port = int(get_setting("PORT", 8000))
+        host = get_setting("HOST", "0.0.0.0")
+        print(f"[*] Starting SellerOS Warehouse MCP HTTP server on {host}:{port}...")
+        uvicorn.run(app, host=host, port=port)
     elif "--server" in sys.argv or not sys.stdin.isatty():
         # Spawned by Claude Desktop, Antigravity IDE, or with --server flag
         mcp.run()

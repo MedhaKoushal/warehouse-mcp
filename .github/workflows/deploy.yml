@@ -1,0 +1,87 @@
+name: Deploy Warehouse MCP Server to AWS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: selleros-warehouse-mcp
+  ECS_CLUSTER: selleros-dataapi
+  API_ECS_SERVICE: selleros-mcp
+  API_ECS_TASK_DEF: selleros-mcp
+  API_CONTAINER_NAME: selleros-mcp
+
+jobs:
+  deploy-mcp:
+    name: Build & Deploy Warehouse MCP to AWS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for ARM64 Build
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push MCP Image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building Warehouse MCP container for ARM64..."
+          docker build --platform linux/arm64 -f Dockerfile -t $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPO:latest .
+          docker push $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPO:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Download AWS ECS Task Definition
+        id: download-task-def
+        run: |
+          aws ecs describe-task-definition --task-definition ${{ env.API_ECS_TASK_DEF }} --query taskDefinition > task-definition.json
+
+      - name: Resolve Container Name
+        id: resolve-container
+        run: |
+          CONFIGURED_NAME="${{ env.API_CONTAINER_NAME }}"
+          DETECTED_NAME=$(jq -r '.containerDefinitions[0].name' task-definition.json)
+          if [ -n "$CONFIGURED_NAME" ] && jq -e --arg name "$CONFIGURED_NAME" '.containerDefinitions[] | select(.name == $name)' task-definition.json > /dev/null 2>&1; then
+            echo "Using configured container name: $CONFIGURED_NAME"
+            echo "container_name=$CONFIGURED_NAME" >> $GITHUB_OUTPUT
+          else
+            echo "Configured name '$CONFIGURED_NAME' not found in task def. Using detected container name: $DETECTED_NAME"
+            echo "container_name=$DETECTED_NAME" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Render New Container Image in Task Definition
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ steps.resolve-container.outputs.container_name }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Amazon ECS Task Definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          service: ${{ env.API_ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: false
