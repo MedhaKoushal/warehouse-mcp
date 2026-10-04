@@ -73,6 +73,7 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 # Configure FastMCP transport security for custom ALB domain
+sec_settings = None
 try:
     from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
 
@@ -81,11 +82,13 @@ try:
         return None
 
     TransportSecurityMiddleware.validate_request = _noop_validate
-    mcp.settings.transport_security = TransportSecuritySettings(
+    sec_settings = TransportSecuritySettings(
         enable_dns_rebinding_protection=False,
         allowed_hosts=["*", "mcp.app.simpliworks.io", "mcp.app.simpliworks.io:*"],
         allowed_origins=["*"]
     )
+    if hasattr(mcp, "settings") and hasattr(mcp.settings, "transport_security"):
+        mcp.settings.transport_security = sec_settings
 except Exception as e:
     log.warning(f"Could not configure TransportSecuritySettings: {e}")
 
@@ -108,5 +111,12 @@ async def root_endpoint(request: Request):
     })
 
 # Initialize Streamable HTTP Starlette application
-app = mcp.streamable_http_app()
+try:
+    if sec_settings is not None:
+        app = mcp.streamable_http_app(transport_security=sec_settings, host="0.0.0.0")
+    else:
+        app = mcp.streamable_http_app(host="0.0.0.0")
+except TypeError:
+    app = mcp.streamable_http_app()
+
 app.add_middleware(ApiKeyAuthMiddleware)
