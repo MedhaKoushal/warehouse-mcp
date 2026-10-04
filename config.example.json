@@ -12,9 +12,15 @@
   "DB_PASSWORD": "",
   "RDS_CA_BUNDLE": null,
   "ALLOWED_SCHEMAS": [
+    "apify",
+    "audit",
+    "datadive",
     "dw",
     "ops",
-    "apify"
+    "public",
+    "ref",
+    "stg",
+    "triplewhale"
   ],
   "MAX_ROWS": 1000,
   "STATEMENT_TIMEOUT_MS": 30000,

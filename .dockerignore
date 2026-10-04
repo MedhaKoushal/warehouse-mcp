@@ -10,7 +10,7 @@ venv
 dist
 build
 *.spec
-config.json
+# config.json included for remote container defaults
 *.exe
 .system_generated
 installer.py

@@ -128,7 +128,10 @@ DB_NAME           = get_setting("DB_NAME", "warehouse")
 DB_USER           = get_setting("DB_USER", "swdw")
 DB_PASSWORD       = get_setting("DB_PASSWORD")
 CA_BUNDLE         = get_setting("RDS_CA_BUNDLE")
-ALLOWED_SCHEMAS_RAW = get_setting("ALLOWED_SCHEMAS", ["dw", "ops"])
+ALLOWED_SCHEMAS_RAW = get_setting(
+    "ALLOWED_SCHEMAS",
+    ["apify", "audit", "datadive", "dw", "ops", "public", "ref", "stg", "triplewhale"]
+)
 
 if isinstance(ALLOWED_SCHEMAS_RAW, str):
     ALLOWED_SCHEMAS = tuple(s.strip() for s in ALLOWED_SCHEMAS_RAW.split(",") if s.strip())
@@ -518,39 +521,61 @@ def _guard(sql: str) -> str:
 @mcp.tool()
 def list_tables_and_schema(schema: str | None = None) -> dict:
     """Inspect allowed schema tables and column signatures."""
-    targets = [schema] if schema else list(ALLOWED_SCHEMAS)
-    if any(s not in ALLOWED_SCHEMAS for s in targets):
-        raise ValueError(f"Schema not allowed. Allowed: {list(ALLOWED_SCHEMAS)}")
+    try:
+        targets = [schema] if schema else list(ALLOWED_SCHEMAS)
+        if any(s not in ALLOWED_SCHEMAS for s in targets):
+            return {
+                "error": f"Schema '{schema}' not allowed. Allowed schemas: {list(ALLOWED_SCHEMAS)}",
+                "table_count": 0,
+                "tables": []
+            }
 
-    with db_cursor() as cur:
-        cur.execute("""
-            SELECT c.table_schema, c.table_name, c.column_name, c.data_type, c.is_nullable
-            FROM information_schema.columns c
-            JOIN information_schema.tables t 
-              ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-            WHERE c.table_schema = ANY(%s) AND t.table_type = 'BASE TABLE'
-            ORDER BY c.table_schema, c.table_name, c.ordinal_position
-        """, (targets,))
-        rows = cur.fetchall()
+        with db_cursor() as cur:
+            cur.execute("""
+                SELECT c.table_schema, c.table_name, c.column_name, c.data_type, c.is_nullable
+                FROM information_schema.columns c
+                JOIN information_schema.tables t 
+                  ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+                WHERE c.table_schema = ANY(%s) AND t.table_type = 'BASE TABLE'
+                ORDER BY c.table_schema, c.table_name, c.ordinal_position
+            """, (targets,))
+            rows = cur.fetchall()
 
-    tables: dict[str, dict] = {}
-    for r in rows:
-        key = f"{r['table_schema']}.{r['table_name']}"
-        tables.setdefault(key, {"schema": r["table_schema"], "table": r["table_name"], "columns": []})
-        tables[key]["columns"].append({"name": r["column_name"], "type": r["data_type"], "nullable": r["is_nullable"] == "YES"})
-    return {"table_count": len(tables), "tables": list(tables.values())}
+        tables: dict[str, dict] = {}
+        for r in rows:
+            key = f"{r['table_schema']}.{r['table_name']}"
+            tables.setdefault(key, {"schema": r["table_schema"], "table": r["table_name"], "columns": []})
+            tables[key]["columns"].append({"name": r["column_name"], "type": r["data_type"], "nullable": r["is_nullable"] == "YES"})
+        return {"table_count": len(tables), "tables": list(tables.values())}
+    except Exception as e:
+        sys.stderr.write(f"[selleros-warehouse] Error in list_tables_and_schema: {e}\n")
+        return {
+            "error": f"Database error in list_tables_and_schema ({type(e).__name__}): {str(e)}",
+            "table_count": 0,
+            "tables": []
+        }
 
 @mcp.tool()
 def run_metric_query(sql: str, max_rows: int = 200) -> dict:
     """Execute a single read-only analytical SQL query."""
-    q = _guard(sql)
-    limit = max(1, min(max_rows, MAX_ROWS))
-    with db_cursor() as cur:
-        cur.execute(q)
-        rows = cur.fetchmany(limit)
-        truncated = cur.fetchone() is not None
-        cols = [d.name for d in cur.description] if cur.description else []
-    return {"columns": cols, "row_count": len(rows), "truncated": truncated, "rows": [dict(r) for r in rows]}
+    try:
+        q = _guard(sql)
+        limit = max(1, min(max_rows, MAX_ROWS))
+        with db_cursor() as cur:
+            cur.execute(q)
+            rows = cur.fetchmany(limit)
+            truncated = cur.fetchone() is not None
+            cols = [d.name for d in cur.description] if cur.description else []
+        return {"columns": cols, "row_count": len(rows), "truncated": truncated, "rows": [dict(r) for r in rows]}
+    except Exception as e:
+        sys.stderr.write(f"[selleros-warehouse] Error in run_metric_query: {e}\n")
+        return {
+            "error": f"Database error in run_metric_query ({type(e).__name__}): {str(e)}",
+            "columns": [],
+            "row_count": 0,
+            "truncated": False,
+            "rows": []
+        }
 
 # =============================================================== Apify Web & Social Scraping Tools
 

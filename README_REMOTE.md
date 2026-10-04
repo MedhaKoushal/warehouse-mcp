@@ -78,7 +78,7 @@ claude mcp add --transport http selleros https://mcp.app.simpliworks.io/mcp --he
 Once connected, the following tools are available to the AI:
 
 ### Database & Analytics Tools
-- `list_tables_and_schema`: Inspect warehouse tables, column names, data types, and nullability across allowed schemas (`dw`, `ops`, `apify`).
+- `list_tables_and_schema`: Inspect warehouse tables, column names, data types, and nullability across allowed schemas (`apify`, `audit`, `datadive`, `dw`, `ops`, `public`, `ref`, `stg`, `triplewhale`).
 - `run_metric_query`: Execute read-only analytical SQL queries (`SELECT`, `WITH`) directly against the warehouse.
 
 ### Apify Scrapers & Data Tools

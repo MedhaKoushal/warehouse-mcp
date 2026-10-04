@@ -26,15 +26,18 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from server import mcp, get_allowed_api_keys
+from server import (
+    mcp, get_allowed_api_keys,
+    RDS_HOST, RDS_PORT, DB_NAME, DB_USER, DB_PASSWORD, ALLOWED_SCHEMAS, db_cursor
+)
 
 log = logging.getLogger("selleros-warehouse.remote")
 
 class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
     """Timing-safe API key authentication middleware for remote MCP requests."""
     async def dispatch(self, request: Request, call_next):
-        # 1. Allow ALB health checks and root ping without authentication
-        if request.url.path in ("/health", "/healthz", "/ping", "/"):
+        # 1. Allow ALB health checks, root ping, and diagnostic check without authentication
+        if request.url.path in ("/health", "/healthz", "/ping", "/", "/db-diag"):
             return await call_next(request)
 
         allowed_keys = get_allowed_api_keys()
@@ -107,8 +110,51 @@ async def root_endpoint(request: Request):
     return JSONResponse({
         "service": "selleros-warehouse-mcp",
         "mcp_endpoint": "/mcp",
-        "health_endpoint": "/health"
+        "health_endpoint": "/health",
+        "diag_endpoint": "/db-diag"
     })
+
+# Database diagnostic endpoint
+@mcp.custom_route("/db-diag", methods=["GET"])
+async def db_diag_endpoint(request: Request):
+    import socket, time
+    diag = {
+        "host": RDS_HOST,
+        "port": RDS_PORT,
+        "user": DB_USER,
+        "database": DB_NAME,
+        "has_password": bool(DB_PASSWORD),
+        "allowed_schemas": list(ALLOWED_SCHEMAS),
+        "tcp_reachable": False,
+        "tcp_error": None,
+        "query_success": False,
+        "query_error": None,
+        "latency_ms": None,
+    }
+    t0 = time.time()
+    try:
+        s = socket.socket()
+        s.settimeout(3.0)
+        res = s.connect_ex((RDS_HOST, int(RDS_PORT)))
+        s.close()
+        diag["tcp_reachable"] = (res == 0)
+        if res != 0:
+            diag["tcp_error"] = f"Socket error code {res}"
+    except Exception as e:
+        diag["tcp_error"] = str(e)
+
+    if diag["tcp_reachable"]:
+        try:
+            with db_cursor() as cur:
+                cur.execute("SELECT current_user, current_database(), version();")
+                row = cur.fetchone()
+                diag["query_success"] = True
+                diag["server_info"] = dict(row)
+        except Exception as e:
+            diag["query_error"] = f"{type(e).__name__}: {str(e)}"
+
+    diag["latency_ms"] = round((time.time() - t0) * 1000, 1)
+    return JSONResponse(diag)
 
 # Initialize Streamable HTTP Starlette application
 try:
