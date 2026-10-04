@@ -89,7 +89,7 @@ if "DB_PORT" in _cfg and "DB_RDS_PORT" not in _cfg:
 def get_setting(key: str, default: any = None) -> any:
     """Get setting from environment variable first, then config.json, then default."""
     if key in os.environ and os.environ[key].strip() != "":
-        val = os.environ[key]
+        val = os.environ[key].strip()
         if isinstance(default, bool):
             return val.lower() in ("true", "1", "yes")
         if isinstance(default, int):
@@ -97,7 +97,20 @@ def get_setting(key: str, default: any = None) -> any:
         if isinstance(default, list):
             return [s.strip() for s in val.split(",") if s.strip()]
         return val
-    return _cfg.get(key, default)
+
+    # Only return config value if it is non-empty
+    val = _cfg.get(key)
+    if val is not None:
+        if isinstance(val, str) and val.strip() != "":
+            return val.strip()
+        elif isinstance(val, list):
+            cleaned = [s.strip() for s in val if isinstance(s, str) and s.strip() != ""]
+            if cleaned:
+                return cleaned
+        elif not isinstance(val, (str, list)):
+            return val
+
+    return default
 
 def get_allowed_api_keys() -> list[str]:
     """Retrieve list of valid team API keys from setting or environment."""
@@ -127,6 +140,7 @@ RDS_PORT          = get_setting("DB_RDS_PORT", 5432)
 DB_NAME           = get_setting("DB_NAME", "warehouse")
 DB_USER           = get_setting("DB_USER", "swdw")
 DB_PASSWORD       = get_setting("DB_PASSWORD")
+APIFY_TOKEN       = get_setting("APIFY_TOKEN")
 CA_BUNDLE         = get_setting("RDS_CA_BUNDLE")
 ALLOWED_SCHEMAS_RAW = get_setting(
     "ALLOWED_SCHEMAS",
