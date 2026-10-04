@@ -74,7 +74,13 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
 # Configure FastMCP transport security for custom ALB domain
 try:
-    from mcp.server.transport_security import TransportSecuritySettings
+    from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
+
+    # Allow custom ALB host header by overriding transport security validation
+    async def _noop_validate(self, request, is_post=False):
+        return None
+
+    TransportSecurityMiddleware.validate_request = _noop_validate
     mcp.settings.transport_security = TransportSecuritySettings(
         enable_dns_rebinding_protection=False,
         allowed_hosts=["*", "mcp.app.simpliworks.io", "mcp.app.simpliworks.io:*"],

@@ -20,8 +20,8 @@ try:
 except ImportError:
     from mcp.server.mcpserver import MCPServer as FastMCP
 
-# Initialize FastMCP / MCPServer
-mcp = FastMCP("selleros-warehouse")
+# Initialize FastMCP / MCPServer (host="0.0.0.0" disables local-only DNS rebinding restriction)
+mcp = FastMCP("selleros-warehouse", host="0.0.0.0")
 
 # Helper function to load configuration file
 def load_config() -> dict:
