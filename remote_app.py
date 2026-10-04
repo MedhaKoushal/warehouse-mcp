@@ -72,9 +72,16 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
 
         return await call_next(request)
 
-# Disable DNS rebinding check for our custom ALB domain
-if hasattr(mcp.settings, "transport_security"):
-    mcp.settings.transport_security.enable_dns_rebinding_protection = False
+# Configure FastMCP transport security for custom ALB domain
+try:
+    from mcp.server.transport_security import TransportSecuritySettings
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+        allowed_hosts=["*", "mcp.app.simpliworks.io", "mcp.app.simpliworks.io:*"],
+        allowed_origins=["*"]
+    )
+except Exception as e:
+    log.warning(f"Could not configure TransportSecuritySettings: {e}")
 
 # ALB health check route
 @mcp.custom_route("/health", methods=["GET"])
