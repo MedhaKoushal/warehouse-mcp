@@ -1,0 +1,81 @@
+{
+  "name": "datadive_data",
+  "description": "Get Amazon seller data from Data Dive: niche keywords, keyword roots, niche competitors, Ranking Juice, keyword rank history, listing changes, PPC blind-spend and indexing alerts, niches, Rank Radars, seller profiles, and account quota. Answers come from the company data warehouse and are refreshed from Data Dive automatically when stale, so call this tool whenever the user asks about these topics. Check `stale` and `snapshot_at` in the result and tell the user how fresh the data is when it matters. If `redive_recommended` is true, tell the user the niche research is old and should be re-dived in the Data Dive app; this tool cannot start a dive. If `truncated` is true, say how many rows exist (`row_count`) and offer to narrow the request.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "dataset": {
+        "type": "string",
+        "enum": [
+          "niches",
+          "niche_keywords",
+          "niche_roots",
+          "niche_competitors",
+          "ranking_juice",
+          "alerts",
+          "rank_daily",
+          "listing_changes",
+          "seller_profiles",
+          "rank_radars",
+          "quota"
+        ],
+        "description": "niches: list of researched niches (use it to find a niche_id). niche_keywords / niche_roots / niche_competitors / ranking_juice: research for one niche (needs niche_id). alerts: wasted ad spend (blind_spend) and lost keyword indexing (indexing). rank_daily: daily organic, sponsored and impression rank per keyword (needs asin or radar_id). listing_changes: changes to listings (needs seller_id). seller_profiles: connected seller accounts (use it to find seller_id). rank_radars: tracked ASINs. quota: Data Dive plan usage."
+      },
+      "niche_id": {
+        "type": "string",
+        "description": "Required for niche_keywords, niche_roots, niche_competitors, ranking_juice. Find it with dataset=niches."
+      },
+      "asin": {
+        "type": "string",
+        "description": "Amazon ASIN. Needed for rank_daily if no radar_id; optional filter for alerts, listing_changes, rank_radars."
+      },
+      "radar_id": {
+        "type": "string",
+        "description": "Rank Radar id for rank_daily (alternative to asin)."
+      },
+      "seller_id": {
+        "type": "string",
+        "description": "Amazon seller id. Required for listing_changes; optional filter for alerts. Find it with dataset=seller_profiles."
+      },
+      "marketplace": {
+        "type": "string",
+        "description": "Marketplace code such as US, UK, DE. Optional filter."
+      },
+      "start_date": {
+        "type": "string",
+        "format": "date",
+        "description": "YYYY-MM-DD. For rank_daily and listing_changes. Default: 7 days before end_date. Max range 90 days."
+      },
+      "end_date": {
+        "type": "string",
+        "format": "date",
+        "description": "YYYY-MM-DD. For rank_daily and listing_changes. Default: today (UTC)."
+      },
+      "keyword": {
+        "type": "string",
+        "description": "rank_daily only: keep keywords containing this text."
+      },
+      "alert_type": {
+        "type": "string",
+        "enum": ["blind_spend", "indexing"],
+        "description": "alerts only. Omit for both types."
+      },
+      "alert_status": {
+        "type": "string",
+        "enum": ["active", "resolved", "all"],
+        "description": "alerts only. Default active."
+      },
+      "force_refresh": {
+        "type": "boolean",
+        "description": "Pull from Data Dive even if the stored copy is fresh. Only when the user explicitly asks for the latest data. Ignored if refreshed in the last few minutes."
+      },
+      "max_rows": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000,
+        "description": "Maximum rows to return. Default 200."
+      }
+    },
+    "required": ["dataset"]
+  }
+}

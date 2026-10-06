@@ -656,6 +656,135 @@ def get_apify_results(run_ids: list[str], partner: str | None = None) -> dict:
     if partner: ctx["partner"] = partner
     return handle_apify_tool("get_apify_results", {"run_ids": run_ids}, ctx)
 
+# =============================================================== Data Dive (datadive_tool.py)
+# Mirrors tool_schema.json. The handler lives in datadive_tool.py and is
+# imported lazily (like the Apify tools) so nothing changes for the other tools.
+
+import threading
+from typing import Annotated, Literal
+
+from pydantic import Field
+
+# Non-secret Data Dive settings that may come from config.json / Secrets Manager
+_DATADIVE_ENV_KEYS = (
+    "DD_SECRET_ID", "DW_SECRET_ID", "DW_SSL", "DW_SSL_CA", "DATADIVE_DB_SCHEMA",
+    "DATADIVE_BUCKET", "ALERT_TTL_HOURS", "RANK_TTL_HOURS", "LISTING_TTL_HOURS",
+    "NICHE_LIST_TTL_HOURS", "NICHE_CHECK_MINUTES", "FORCE_COOLDOWN_MINUTES",
+    "REDIVE_AFTER_DAYS",
+)
+_datadive_lock = threading.Lock()   # datadive_tool keeps one DB connection
+_datadive_configured = False
+
+
+def _datadive_fallback_db() -> dict:
+    """The MCP's own warehouse login (read-only for datadive_* tables)."""
+    if DB_PASSWORD:
+        pwd = DB_PASSWORD
+    else:
+        session = boto3.Session(profile_name=AWS_PROFILE, region_name=REGION) \
+            if (AWS_PROFILE and DEPLOY_MODE != "remote") else boto3.Session(region_name=REGION)
+        pwd = session.client("rds").generate_db_auth_token(
+            DBHostname=RDS_HOST, Port=int(RDS_PORT), DBUsername=DB_USER, Region=REGION
+        )
+    return {"host": RDS_HOST, "port": int(RDS_PORT), "database": DB_NAME,
+            "user": DB_USER, "password": pwd}
+
+
+def _datadive_module():
+    """Import and configure datadive_tool on first use."""
+    global _datadive_configured
+    if not _datadive_configured:
+        for key in _DATADIVE_ENV_KEYS:
+            val = get_setting(key)
+            if val not in (None, "") and not os.environ.get(key):
+                os.environ[key] = str(val)
+    import datadive_tool
+    if not _datadive_configured:
+        datadive_tool.AWS_REGION = REGION or datadive_tool.AWS_REGION
+        if DEPLOY_MODE != "remote" and AWS_PROFILE:
+            datadive_tool.AWS_PROFILE = AWS_PROFILE
+        datadive_tool.configure(
+            api_key=get_setting("DATADIVE_API_KEY"),
+            writer_user=get_setting("DATADIVE_DB_USER"),
+            writer_password=get_setting("DATADIVE_DB_PASSWORD"),
+            writer_host=get_setting("DATADIVE_DB_HOST"),
+            writer_port=get_setting("DATADIVE_DB_PORT"),
+            writer_database=get_setting("DATADIVE_DB_NAME"),
+            fallback_db=_datadive_fallback_db,
+            connect_via=None if DEPLOY_MODE == "remote" else (LOCAL_HOST, LOCAL_PORT),
+        )
+        _datadive_configured = True
+    if DEPLOY_MODE != "remote":
+        _ensure_ssm_tunnel()
+    return datadive_tool
+
+
+@mcp.tool()
+async def datadive_data(
+    dataset: Annotated[Literal[
+        "niches", "niche_keywords", "niche_roots", "niche_competitors", "ranking_juice",
+        "alerts", "rank_daily", "listing_changes", "seller_profiles", "rank_radars", "quota",
+    ], Field(description=(
+        "niches: list of researched niches (use it to find a niche_id). niche_keywords / "
+        "niche_roots / niche_competitors / ranking_juice: research for one niche (needs "
+        "niche_id). alerts: wasted ad spend (blind_spend) and lost keyword indexing "
+        "(indexing). rank_daily: daily organic, sponsored and impression rank per keyword "
+        "(needs asin or radar_id). listing_changes: changes to listings (needs seller_id). "
+        "seller_profiles: connected seller accounts (use it to find seller_id). "
+        "rank_radars: tracked ASINs. quota: Data Dive plan usage."))],
+    niche_id: Annotated[str | None, Field(description=(
+        "Required for niche_keywords, niche_roots, niche_competitors, ranking_juice. "
+        "Find it with dataset=niches."))] = None,
+    asin: Annotated[str | None, Field(description=(
+        "Amazon ASIN. Needed for rank_daily if no radar_id; optional filter for alerts, "
+        "listing_changes, rank_radars."))] = None,
+    radar_id: Annotated[str | None, Field(description=(
+        "Rank Radar id for rank_daily (alternative to asin)."))] = None,
+    seller_id: Annotated[str | None, Field(description=(
+        "Amazon seller id. Required for listing_changes; optional filter for alerts. "
+        "Find it with dataset=seller_profiles."))] = None,
+    marketplace: Annotated[str | None, Field(description=(
+        "Marketplace code such as US, UK, DE. Optional filter."))] = None,
+    start_date: Annotated[str | None, Field(description=(
+        "YYYY-MM-DD. For rank_daily and listing_changes. Default: 7 days before end_date. "
+        "Max range 90 days."))] = None,
+    end_date: Annotated[str | None, Field(description=(
+        "YYYY-MM-DD. For rank_daily and listing_changes. Default: today (UTC)."))] = None,
+    keyword: Annotated[str | None, Field(description=(
+        "rank_daily only: keep keywords containing this text."))] = None,
+    alert_type: Annotated[Literal["blind_spend", "indexing"] | None, Field(description=(
+        "alerts only. Omit for both types."))] = None,
+    alert_status: Annotated[Literal["active", "resolved", "all"] | None, Field(description=(
+        "alerts only. Default active."))] = None,
+    force_refresh: Annotated[bool, Field(description=(
+        "Pull from Data Dive even if the stored copy is fresh. Only when the user explicitly "
+        "asks for the latest data. Ignored if refreshed in the last few minutes."))] = False,
+    max_rows: Annotated[int, Field(ge=1, le=1000, description=(
+        "Maximum rows to return. Default 200."))] = 200,
+) -> dict:
+    """Get Amazon seller data from Data Dive: niche keywords, keyword roots, niche competitors, Ranking Juice, keyword rank history, listing changes, PPC blind-spend and indexing alerts, niches, Rank Radars, seller profiles, and account quota. Answers come from the company data warehouse and are refreshed from Data Dive automatically when stale, so call this tool whenever the user asks about these topics. Check `stale` and `snapshot_at` in the result and tell the user how fresh the data is when it matters. If `redive_recommended` is true, tell the user the niche research is old and should be re-dived in the Data Dive app; this tool cannot start a dive. If `truncated` is true, say how many rows exist (`row_count`) and offer to narrow the request."""
+    import anyio
+
+    args = {
+        "dataset": dataset, "niche_id": niche_id, "asin": asin, "radar_id": radar_id,
+        "seller_id": seller_id, "marketplace": marketplace, "start_date": start_date,
+        "end_date": end_date, "keyword": keyword, "alert_type": alert_type,
+        "alert_status": alert_status, "force_refresh": force_refresh, "max_rows": max_rows,
+    }
+    args = {k: v for k, v in args.items() if v is not None}
+
+    def _run() -> dict:
+        with _datadive_lock:
+            return _datadive_module().handle_datadive_tool(args)
+
+    try:
+        # Data Dive / DB calls block; run them off the event loop so other
+        # requests and the ALB health check keep being served.
+        return await anyio.to_thread.run_sync(_run)
+    except Exception as e:
+        sys.stderr.write(f"[selleros-warehouse] Error in datadive_data: {e}\n")
+        return {"dataset": dataset, "error": f"Data Dive tool error ({type(e).__name__}): {e}"}
+
 if __name__ == "__main__":
     if "--install" in sys.argv:
         from installer import run_installation
@@ -688,6 +817,15 @@ if __name__ == "__main__":
             else:
                 print("[!] Apify Token: not set (set APIFY_TOKEN in config.json or env to run live scrapes)")
             print("[+] Registered Apify tools: apify_amazon_product, apify_amazon_offers, apify_amazon_search, apify_amazon_reviews, apify_social_posts, apify_web_research, get_apify_results")
+
+            print("[*] Testing Data Dive tool (datadive_data)...")
+            try:
+                dd = _datadive_module()
+                dd.get_connection()
+                print(f"[+] Data Dive warehouse login: {dd._conn_source} "
+                      f"({'can refresh' if dd._conn_writable else 'read-only: answers from stored data, no refresh'})")
+            except Exception as dd_err:
+                print(f"[!] Data Dive tool not ready (other tools unaffected): {dd_err}")
 
             print("\n[+] ALL CHECKS PASSED! Ready for Claude Desktop & Antigravity IDE.")
         except Exception as e:
