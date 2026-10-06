@@ -785,6 +785,43 @@ async def datadive_data(
         sys.stderr.write(f"[selleros-warehouse] Error in datadive_data: {e}\n")
         return {"dataset": dataset, "error": f"Data Dive tool error ({type(e).__name__}): {e}"}
 
+# =============================================================== MerchantSpring Tools
+# Integrates live Search Query Performance (SQP), advertising, profitability,
+# sales reporting, and order data from MerchantSpring.
+try:
+    import merchantspring_tools as ms_tools
+
+    # Domain 1: Channels & Tags
+    mcp.tool()(ms_tools.get_merchantspring_channels)
+    mcp.tool()(ms_tools.get_merchantspring_tags)
+
+    # Domain 2: Search Query Performance (SQP)
+    mcp.tool()(ms_tools.get_search_query_performance_asins)
+    mcp.tool()(ms_tools.get_search_query_performance_keywords)
+
+    # Domain 3: Advertising
+    mcp.tool()(ms_tools.get_ms_campaigns)
+    mcp.tool()(ms_tools.get_ms_ad_groups)
+    mcp.tool()(ms_tools.get_ms_keywords)
+    mcp.tool()(ms_tools.get_ms_products)
+
+    # Domain 4: Profitability
+    mcp.tool()(ms_tools.get_store_profit_and_loss)
+    mcp.tool()(ms_tools.get_product_profit_and_loss)
+
+    # Domain 5: Reports
+    mcp.tool()(ms_tools.get_sales_by_period)
+    mcp.tool()(ms_tools.get_sales_by_product)
+    mcp.tool()(ms_tools.get_sales_by_channel)
+    mcp.tool()(ms_tools.get_advertising_by_channels)
+
+    # Domain 6: Orders & Catalog
+    mcp.tool()(ms_tools.find_asin_store)
+    mcp.tool()(ms_tools.get_amazon_orders)
+    mcp.tool()(ms_tools.get_amazon_products)
+except Exception as _ms_e:
+    sys.stderr.write(f"[selleros-warehouse] Warning: Failed to register MerchantSpring tools: {_ms_e}\n")
+
 if __name__ == "__main__":
     if "--install" in sys.argv:
         from installer import run_installation
