@@ -153,8 +153,9 @@ class PromptSessionAggregator:
                 self._emit_record(record)
                 return
 
-            # 2. Key sessions by (client_key, client_ip, prompt_str)
-            key = (mask_key(client_key), client_ip or "local", prompt_str)
+            # 2. Key sessions by (client_key, prompt_str) - omit client_ip because Claude/LLMs rotate egress IPs across tool calls
+            norm_prompt = prompt_str.lower().strip()
+            key = (mask_key(client_key), norm_prompt)
 
             if key not in self.sessions:
                 sess_id = f"sess_{ts_str}_{uuid.uuid4().hex[:6]}"
@@ -162,7 +163,7 @@ class PromptSessionAggregator:
                     "session_id": sess_id,
                     "user_prompt": prompt_str,
                     "client_key": mask_key(client_key),
-                    "client_ip": client_ip or "local",
+                    "client_ips": [client_ip] if client_ip else ["local"],
                     "trace_id": trace_id,
                     "started_at": datetime.now(timezone.utc).isoformat(),
                     "first_seen": now,
@@ -171,6 +172,9 @@ class PromptSessionAggregator:
                     "tools": [],
                     "timer": None,
                 }
+            else:
+                if client_ip and client_ip not in self.sessions[key]["client_ips"]:
+                    self.sessions[key]["client_ips"].append(client_ip)
 
             sess = self.sessions[key]
             sess["tools"].append(tool_record)
@@ -204,6 +208,10 @@ class PromptSessionAggregator:
         if sess.get("timer"):
             sess["timer"].cancel()
 
+        # Format client_ip as a single string if 1 IP, or list if multiple egress IPs
+        client_ips = sess.get("client_ips", ["local"])
+        ip_display = client_ips[0] if len(client_ips) == 1 else client_ips
+
         record = {
             "audit": True,
             "event": "mcp_prompt_audit",
@@ -211,7 +219,7 @@ class PromptSessionAggregator:
             "timestamp": sess["started_at"],
             "user_prompt": sess["user_prompt"],
             "client_key": sess["client_key"],
-            "client_ip": sess["client_ip"],
+            "client_ip": ip_display,
             "status": sess["status"],
             "tool_count": len(sess["tools"]),
             "total_duration_ms": round(sess["total_duration_ms"], 2),
@@ -242,8 +250,8 @@ class PromptSessionAggregator:
                 pass
 
 # Global aggregator instance (configurable via env vars)
-_WINDOW_SEC = float(os.environ.get("AUDIT_SESSION_WINDOW_SEC", "3.0"))
-_MAX_AGE_SEC = float(os.environ.get("AUDIT_MAX_SESSION_AGE_SEC", "30.0"))
+_WINDOW_SEC = float(os.environ.get("AUDIT_SESSION_WINDOW_SEC", "5.0"))
+_MAX_AGE_SEC = float(os.environ.get("AUDIT_MAX_SESSION_AGE_SEC", "60.0"))
 _aggregator = PromptSessionAggregator(window_sec=_WINDOW_SEC, max_age_sec=_MAX_AGE_SEC)
 
 # Ensure pending audit sessions are flushed when container stops
