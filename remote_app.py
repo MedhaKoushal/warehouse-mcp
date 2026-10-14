@@ -79,8 +79,19 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
         if client_ip and "," in client_ip:
             client_ip = client_ip.split(",")[0].strip()
 
+        # Extract AWS ALB trace ID or MCP session ID for distributed correlation
+        trace_id = (
+            request.headers.get("X-Amzn-Trace-Id")
+            or request.headers.get("Mcp-Session-Id")
+            or request.headers.get("X-Request-Id")
+        )
+
         # Set audit context for downstream tool invocations
-        set_audit_context(client_key=key if allowed_keys else None, client_ip=client_ip)
+        set_audit_context(
+            client_key=key if allowed_keys else None,
+            client_ip=client_ip,
+            trace_id=trace_id,
+        )
 
         return await call_next(request)
 
