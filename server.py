@@ -824,9 +824,8 @@ except Exception as _ms_e:
 
 if __name__ == "__main__":
     if "--install" in sys.argv:
-        from installer import run_installation
-        run_installation()
-        sys.exit(0)
+        print("[!] Local installer is disabled in remote/cloud deployment mode.")
+        sys.exit(1)
     elif "--test" in sys.argv:
         print("[*] Testing SellerOS Warehouse MCP connection...")
         try:
@@ -876,11 +875,6 @@ if __name__ == "__main__":
         host = get_setting("HOST", "0.0.0.0")
         print(f"[*] Starting SellerOS Warehouse MCP HTTP server on {host}:{port}...")
         uvicorn.run(app, host=host, port=port)
-    elif "--server" in sys.argv or not sys.stdin.isatty():
-        # Spawned by Claude Desktop, Antigravity IDE, or with --server flag
-        mcp.run()
     else:
-        # Double-clicked directly by user in Windows File Explorer
-        from installer import run_installation
-        run_installation()
-        sys.exit(0)
+        # Default run as standard MCP server
+        mcp.run()

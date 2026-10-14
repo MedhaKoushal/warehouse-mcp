@@ -13,5 +13,3 @@ build
 config.json
 *.exe
 .system_generated
-installer.py
-build_exe.py
