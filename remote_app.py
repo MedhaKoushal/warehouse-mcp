@@ -30,6 +30,7 @@ from server import (
     mcp, get_allowed_api_keys,
     RDS_HOST, RDS_PORT, DB_NAME, DB_USER, DB_PASSWORD, ALLOWED_SCHEMAS, db_cursor
 )
+from audit_logger import set_audit_context
 
 log = logging.getLogger("selleros-warehouse.remote")
 
@@ -72,6 +73,14 @@ class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
                     status_code=401,
                     headers={"WWW-Authenticate": "Bearer"}
                 )
+
+        # Extract real client IP (ALB passes original IP in X-Forwarded-For)
+        client_ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
+        if client_ip and "," in client_ip:
+            client_ip = client_ip.split(",")[0].strip()
+
+        # Set audit context for downstream tool invocations
+        set_audit_context(client_key=key if allowed_keys else None, client_ip=client_ip)
 
         return await call_next(request)
 
